@@ -90,29 +90,68 @@ def scan_available_stocks() -> list:
     扫描项目目录下所有 *行情数据.csv 文件
     返回 [{"name": "寒武纪", "code": "688256.SH", "file": "...", "lot_size": 200, "board": "科创板", "data_min": "...", "data_max": "..."}]
     """
-    pattern = os.path.join(PROJECT_DIR, '*行情数据.csv')
-    files = glob.glob(pattern)
+    # ===== 多层搜索策略：兼容各种部署环境 =====
+    search_dirs = [
+        PROJECT_DIR,                                    # __file__ 推算的根目录
+        os.getcwd(),                                    # 当前工作目录
+        os.path.dirname(os.path.abspath(__file__)),     # app/ 目录本身
+        os.path.join(os.getcwd(), '..'),                # 工作目录的上级
+    ]
+    # Streamlit Cloud 常见挂载路径
+    cloud_mount = '/mount/src'
+    if os.path.isdir(cloud_mount):
+        for repo_name in os.listdir(cloud_mount):
+            search_dirs.append(os.path.join(cloud_mount, repo_name))
 
-    # 调试信息：如果没找到文件，打印搜索路径帮助排查
-    if not files:
-        # 再试一次：直接搜当前目录
-        files = glob.glob('*行情数据.csv')
-        if not files:
-            # 在当前目录的上级找
-            files = glob.glob(os.path.join('..', '*行情数据.csv'))
-            if files:
-                files = [os.path.abspath(f) for f in files]
+    files = []
+    searched_patterns = []
+    for d in set(search_dirs):
+        d = os.path.normpath(os.path.abspath(d))
+        if not os.path.isdir(d):
+            continue
+        pattern = os.path.join(d, '*行情数据.csv')
+        searched_patterns.append(pattern)
+        matches = glob.glob(pattern)
+        files.extend(matches)
+
+    # 去重
+    files = list(set(files))
 
     if not files:
+        # 最后一招：递归搜索整个仓库
         import streamlit as st
-        st.error(
-            f"未找到任何行情数据文件。\n\n"
-            f"搜索路径: `{pattern}`\n\n"
-            f"请确保 CSV 数据文件在仓库根目录下。\n"
-            f"当前项目根目录: `{PROJECT_DIR}`\n"
-            f"当前工作目录: `{os.getcwd()}`"
-        )
-        return []
+        for base_dir in [PROJECT_DIR, os.getcwd(), '/mount/src']:
+            if not os.path.isdir(base_dir):
+                continue
+            for root, dirs, fnames in os.walk(base_dir):
+                # 限制搜索深度，避免太慢
+                depth = root.replace(base_dir, '').count(os.sep)
+                if depth > 3:
+                    break
+                for fn in fnames:
+                    if fn.endswith('行情数据.csv'):
+                        files.append(os.path.join(root, fn))
+
+        if not files:
+            # 构建详细的错误信息
+            cwd = os.getcwd()
+            cwd_contents = os.listdir(cwd) if os.path.isdir(cwd) else []
+            proj_contents = os.listdir(PROJECT_DIR) if os.path.isdir(PROJECT_DIR) else []
+            app_contents = os.listdir(os.path.join(PROJECT_DIR, 'app')) if os.path.isdir(os.path.join(PROJECT_DIR, 'app')) else []
+
+            st.error(
+                f"### 未找到任何行情数据文件\n\n"
+                f"**搜索了以下路径：**\n"
+                + '\n'.join([f"- `{p}`" for p in searched_patterns]) +
+                f"\n\n**当前工作目录** (`{cwd}`) **下的文件：**\n"
+                + ('\n'.join([f"- `{f}`" for f in cwd_contents]) if cwd_contents else '（空目录）') +
+                f"\n\n**项目根目录** (`{PROJECT_DIR}`) **下的文件：**\n"
+                + ('\n'.join([f"- `{f}`" for f in proj_contents]) if proj_contents else '（空目录）') +
+                f"\n\n**app/ 目录下的文件：**\n"
+                + ('\n'.join([f"- `{f}`" for f in app_contents]) if app_contents else '（空目录）') +
+                f"\n\n**解决方法：** 请确认 3 个 CSV 数据文件（`寒武纪行情数据.csv`、`宁德时代行情数据.csv`、`招商银行行情数据.csv`）已上传到 GitHub 仓库的**根目录**（和 `README.md` 平级，而不是在 `app/` 文件夹内）。"
+            )
+            return []
     stocks = []
     for f in files:
         basename = os.path.basename(f)
